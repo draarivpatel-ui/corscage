@@ -1,0 +1,66 @@
+{
+  "name": "corscage",
+  "version": "1.0.0",
+  "description": "Zero-dependency strict CORS origin validation, preflight policy enforcement, middleware and configuration auditing for Node.js",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/draarivpatel-ui/corscage.git"
+  },
+  "homepage": "https://github.com/draarivpatel-ui/corscage#readme",
+  "bugs": {
+    "url": "https://github.com/draarivpatel-ui/corscage/issues"
+  },
+  "type": "module",
+  "main": "./cjs/index.cjs",
+  "module": "./src/index.mjs",
+  "types": "./types/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./types/index.d.ts",
+      "import": "./src/index.mjs",
+      "require": "./cjs/index.cjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "bin": {
+    "corscage": "bin/corscage.mjs"
+  },
+  "files": [
+    "src",
+    "cjs",
+    "types",
+    "bin",
+    "docs",
+    "README.md",
+    "SECURITY.md",
+    "CONTRIBUTING.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build:cjs": "node scripts/build-cjs.mjs",
+    "check:cjs": "node scripts/build-cjs.mjs --check",
+    "smoke": "node scripts/smoke.mjs",
+    "test": "node --test tests/*.test.mjs"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "keywords": [
+    "security",
+    "cors",
+    "cors-middleware",
+    "preflight",
+    "private-network-access",
+    "origin-validation",
+    "cache-poisoning",
+    "subdomain-wildcard",
+    "node",
+    "fetch",
+    "express",
+    "zero-dependency"
+  ],
+  "license": "MIT",
+  "sideEffects": false,
+  "dependencies": {},
+  "devDependencies": {}
+}
