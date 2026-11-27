@@ -81,7 +81,6 @@ const DEFAULT_MAX_REQUEST_HEADERS_BYTES = 2048;
 const MAX_REQUEST_HEADERS_LIMIT = 128;
 const MAX_REQUEST_HEADER_BYTES_LIMIT = 16384;
 const TOKEN_RE = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
-const textEncoder = new TextEncoder();
 const VISIBLE_ASCII_RE = /^[\x21-\x7e]+$/;
 const SCHEME_AUTHORITY_RE = /^([A-Za-z][A-Za-z0-9+.-]*):\/\/(.*)$/;
 const DOMAIN_LABEL_RE = /^[a-z0-9-]+$/;
@@ -142,6 +141,15 @@ const KNOWN_OPTION_KEYS = new Set([
   'maxRequestHeadersBytes',
   'allowForbiddenHeaders'
 ]);
+const BOOLEAN_OPTION_KEYS = Object.freeze([
+  'credentials',
+  'allowNullOrigin',
+  'allowHttpLocalhost',
+  'multiLevelSubdomain',
+  'allowPrivateNetwork',
+  'rejectDisallowedPreflight',
+  'allowForbiddenHeaders'
+]);
 const PUBLIC_SUFFIX_AGGREGATORS = new Set([
   'ac', 'co', 'com', 'edu', 'go', 'gob', 'gov', 'mil', 'ne', 'net',
   'or', 'org', 'sch'
@@ -170,6 +178,12 @@ function isPlainObject(value) {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
   const proto = Object.getPrototypeOf(value);
   return proto === Object.prototype || proto === null;
+}
+
+function isAsyncFunction(value) {
+  return typeof value === 'function' &&
+    value.constructor &&
+    value.constructor.name === 'AsyncFunction';
 }
 
 function freezeObject(value) {
@@ -625,6 +639,7 @@ function matchOrigin(candidate, pattern, options) {
   const compiled = parseOriginPattern(pattern);
   if (!compiled.valid) return false;
   if (compiled.type === 'subdomain' && isOverbroadWildcardBase(compiled.host)) return false;
+  if (parsed.scheme === 'http' && (!parsed.isLocalhost || compiled.type !== 'exact')) return false;
   return matchesParsedPattern(parsed, compiled, multiLevelSubdomain);
 }
 
@@ -839,12 +854,15 @@ function normalizeConfig(options) {
     if (typeof options.originPredicate !== 'function') {
       configError('originPredicate must be a synchronous function', options.originPredicate);
     }
-    if (options.originPredicate.constructor && options.originPredicate.constructor.name === 'AsyncFunction') {
+    if (isAsyncFunction(options.originPredicate)) {
       configError('originPredicate must be synchronous, not async', options.originPredicate);
     }
     config.originPredicate = options.originPredicate;
   }
   config.allowedOrigins = normalizeOriginEntries(options.allowedOrigins, config);
+  if (config.allowPrivateNetwork && config.allowedOrigins.some((pattern) => pattern.type === 'any')) {
+    configError('Private Network Access can never be combined with the universal wildcard origin', options.allowedOrigins);
+  }
   return Object.freeze(config);
 }
 
@@ -1027,12 +1045,11 @@ function parseRequestedHeaders(rawState, config) {
     return { valid: false, headers: null, reason: 'Access-Control-Request-Headers must be a single string header value' };
   }
   const raw = rawState.value;
-  const byteLength = textEncoder.encode(raw).length;
-  if (byteLength > config.maxRequestHeadersBytes) {
-    return { valid: false, headers: null, reason: 'Access-Control-Request-Headers exceeds the configured byte cap' };
-  }
   if (!/^[\x20-\x7e]*$/.test(raw)) {
     return { valid: false, headers: null, reason: 'Access-Control-Request-Headers contains control or non-ASCII characters' };
+  }
+  if (raw.length > config.maxRequestHeadersBytes) {
+    return { valid: false, headers: null, reason: 'Access-Control-Request-Headers exceeds the configured byte cap' };
   }
   const pieces = raw.split(',');
   if (pieces.length > config.maxRequestHeaders) {
@@ -1293,6 +1310,130 @@ function applyNodeHeaders(res, headers) {
   for (const key of Object.keys(headers)) nodeSetHeader(res, key, headers[key]);
 }
 
+function assertNodeResponseShape(res) {
+  if (res === null || typeof res !== 'object') {
+    throwError(CODE.INVALID_INPUT, 'the response must be a response-like object', res);
+  }
+  if (res.headersSent === true) {
+    throwError(CODE.INVALID_INPUT, 'the response headers have already been sent', res);
+  }
+  if (typeof res.setHeader !== 'function') {
+    throwError(CODE.INVALID_INPUT, 'the response object does not implement setHeader', res);
+  }
+  if (typeof res.getHeader !== 'function') {
+    throwError(CODE.INVALID_INPUT, 'the response object does not implement getHeader', res);
+  }
+  if (typeof res.removeHeader !== 'function') {
+    throwError(CODE.INVALID_INPUT, 'the response object does not implement removeHeader', res);
+  }
+}
+
+function installNodeResponseGuard(res, result) {
+  const originalSetHeader = res.setHeader;
+  const originalRemoveHeader = typeof res.removeHeader === 'function' ? res.removeHeader : null;
+  const originalAppendHeader = typeof res.appendHeader === 'function' ? res.appendHeader : null;
+  const originalSetHeaders = typeof res.setHeaders === 'function' ? res.setHeaders : null;
+
+  function removeDirect(name) {
+    if (originalRemoveHeader !== null) return originalRemoveHeader.call(res, name);
+    if (isPlainObject(res.headers)) {
+      for (const key of Object.keys(res.headers)) {
+        if (key.toLowerCase() === String(name).toLowerCase()) delete res.headers[key];
+      }
+    }
+    return undefined;
+  }
+
+  function setProtectedCorsHeader(name) {
+    const lower = name.toLowerCase();
+    const value = result.allowed ? result.headers[lower] : undefined;
+    if (value === undefined) {
+      removeDirect(name);
+      return res;
+    }
+    originalSetHeader.call(res, name, value);
+    return res;
+  }
+
+  function protectedVaryValue(candidate) {
+    const mergedWithExisting = mergeVary(nodeGetHeader(res, 'vary'), candidate);
+    return mergeVary(mergedWithExisting, result.vary);
+  }
+
+  function setProtectedVary(candidate) {
+    const merged = protectedVaryValue(candidate);
+    if (merged.length > 0) originalSetHeader.call(res, 'Vary', merged);
+    else removeDirect('Vary');
+    return res;
+  }
+
+  function enforceStoredPolicyHeaders() {
+    for (const name of CORS_RESPONSE_HEADERS) {
+      const value = result.allowed ? result.headers[name] : undefined;
+      if (value === undefined) removeDirect(name);
+      else originalSetHeader.call(res, name, value);
+    }
+    setProtectedVary(undefined);
+  }
+
+  function guardedSetHeader(name, value) {
+    if (typeof name === 'string') {
+      const lower = name.toLowerCase();
+      if (CORS_RESPONSE_HEADERS.includes(lower)) return setProtectedCorsHeader(name);
+      if (lower === 'vary') return setProtectedVary(value);
+    }
+    return originalSetHeader.call(res, name, value);
+  }
+
+  function guardedRemoveHeader(name) {
+    if (typeof name !== 'string') return removeDirect(name);
+    const lower = name.toLowerCase();
+    if (CORS_RESPONSE_HEADERS.includes(lower)) {
+      const output = removeDirect(name);
+      const value = result.allowed ? result.headers[lower] : undefined;
+      if (value !== undefined) originalSetHeader.call(res, name, value);
+      return output;
+    }
+    if (lower === 'vary') {
+      const existing = nodeGetHeader(res, 'vary');
+      const output = removeDirect(name);
+      const merged = mergeVary(existing, result.vary);
+      if (merged.length > 0) originalSetHeader.call(res, 'Vary', merged);
+      return output;
+    }
+    return removeDirect(name);
+  }
+
+  function guardedAppendHeader(name, value) {
+    if (typeof name === 'string') {
+      const lower = name.toLowerCase();
+      if (CORS_RESPONSE_HEADERS.includes(lower)) return setProtectedCorsHeader(name);
+      if (lower === 'vary') return setProtectedVary(value);
+    }
+    return originalAppendHeader.call(res, name, value);
+  }
+
+  function guardedSetHeaders(headers) {
+    const output = originalSetHeaders.call(res, headers);
+    enforceStoredPolicyHeaders();
+    return output;
+  }
+
+  function defineGuardedMethod(name, implementation) {
+    Object.defineProperty(res, name, {
+      value: implementation,
+      writable: true,
+      configurable: true,
+      enumerable: false
+    });
+  }
+
+  defineGuardedMethod('setHeader', guardedSetHeader);
+  defineGuardedMethod('removeHeader', guardedRemoveHeader);
+  if (originalAppendHeader !== null) defineGuardedMethod('appendHeader', guardedAppendHeader);
+  if (originalSetHeaders !== null) defineGuardedMethod('setHeaders', guardedSetHeaders);
+}
+
 function createNodeCorsMiddleware(options) {
   const config = normalizeConfig(options);
   const policy = createCorsPolicy(options);
@@ -1301,6 +1442,7 @@ function createNodeCorsMiddleware(options) {
     if (typeof next !== 'function') {
       throwError(CODE.INVALID_INPUT, 'next must be a function', next);
     }
+    assertNodeResponseShape(res);
     const result = evaluateWithConfig(config, req);
     stripNodeCorsHeaders(res);
     applyNodeVary(res, result.vary);
@@ -1308,18 +1450,26 @@ function createNodeCorsMiddleware(options) {
       if (result.allowed) {
         applyNodeHeaders(res, result.headers);
         res.statusCode = result.statusCode;
-        if (typeof res.end === 'function') res.end();
+        if (typeof res.end !== 'function') {
+          throwError(CODE.INVALID_INPUT, 'the response object does not implement end for a terminal preflight', res);
+        }
+        res.end();
         return;
       }
       if (config.rejectDisallowedPreflight) {
         res.statusCode = result.statusCode;
-        if (typeof res.end === 'function') res.end();
+        if (typeof res.end !== 'function') {
+          throwError(CODE.INVALID_INPUT, 'the response object does not implement end for a terminal preflight', res);
+        }
+        res.end();
         return;
       }
+      installNodeResponseGuard(res, result);
       next();
       return;
     }
     if (result.allowed) applyNodeHeaders(res, result.headers);
+    installNodeResponseGuard(res, result);
     next();
   };
   Object.defineProperty(middleware, 'policy', {
@@ -1385,6 +1535,21 @@ function addFinding(findings, code, severity, message, remediation, path) {
     remediation,
     path: path || null
   }));
+}
+
+function lintBoundedIntegerOption(findings, options, key, minimum, maximum) {
+  const value = options[key];
+  if (value === undefined) return;
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < minimum || value > maximum) {
+    addFinding(
+      findings,
+      LINT_CODES.CONFIG_INVALID,
+      'high',
+      'Option ' + key + ' must be a safe integer from ' + String(minimum) + ' through ' + String(maximum) + '.',
+      'Use an integer inside the enforced preflight denial-of-service range.',
+      key
+    );
+  }
 }
 
 function lintOriginEntry(findings, entry, index, credentials) {
@@ -1494,6 +1659,20 @@ function lintCorsPolicy(options) {
       );
     }
   }
+  for (const key of BOOLEAN_OPTION_KEYS) {
+    if (options[key] !== undefined && typeof options[key] !== 'boolean') {
+      addFinding(
+        findings,
+        LINT_CODES.CONFIG_INVALID,
+        'high',
+        'Option ' + key + ' must be a boolean.',
+        'Use exactly true or false. Truthy strings and numbers are rejected by the runtime validator.',
+        key
+      );
+    }
+  }
+  lintBoundedIntegerOption(findings, options, 'maxRequestHeaders', 1, MAX_REQUEST_HEADERS_LIMIT);
+  lintBoundedIntegerOption(findings, options, 'maxRequestHeadersBytes', 128, MAX_REQUEST_HEADER_BYTES_LIMIT);
   const credentials = options.credentials === true;
   const rawOrigins = options.allowedOrigins;
   const entries = rawOrigins === undefined ? [] : (typeof rawOrigins === 'string' ? [rawOrigins] : (Array.isArray(rawOrigins) ? rawOrigins : [rawOrigins]));
@@ -1571,6 +1750,15 @@ function lintCorsPolicy(options) {
         'Use a synchronous predicate that returns a boolean.',
         'originPredicate'
       );
+    } else if (isAsyncFunction(options.originPredicate)) {
+      addFinding(
+        findings,
+        LINT_CODES.CONFIG_INVALID,
+        'high',
+        'originPredicate must be synchronous, not async.',
+        'Use a synchronous function that returns exactly true or false.',
+        'originPredicate'
+      );
     } else if (entries.length === 0 || credentials) {
       addFinding(
         findings,
@@ -1617,13 +1805,13 @@ function lintCorsPolicy(options) {
   for (let index = 0; index < exposeEntries.length; index += 1) {
     const value = exposeEntries[index];
     const lower = validateHeaderName(value);
-    if (lower === null) {
+    if (lower === null || lower === '*') {
       addFinding(
         findings,
         LINT_CODES.INVALID_HEADER_ENTRY,
         'high',
-        'An exposeHeaders entry is not a legal HTTP header name.',
-        'Use exact RFC 9110 field names.',
+        'An exposeHeaders entry is not a legal explicit HTTP header name.',
+        'Use exact RFC 9110 field names. Wildcard exposure is prohibited.',
         'exposeHeaders[' + String(index) + ']'
       );
     } else if (FORBIDDEN_EXPOSE_HEADERS.has(lower)) {
@@ -1641,13 +1829,13 @@ function lintCorsPolicy(options) {
   for (let index = 0; index < allowedEntries.length; index += 1) {
     const value = allowedEntries[index];
     const lower = validateHeaderName(value);
-    if (lower === null) {
+    if (lower === null || lower === '*') {
       addFinding(
         findings,
         LINT_CODES.INVALID_HEADER_ENTRY,
         'high',
-        'An allowedHeaders entry is not a legal HTTP header name.',
-        'Use exact RFC 9110 field names.',
+        'An allowedHeaders entry is not a legal explicit HTTP header name.',
+        'Use exact RFC 9110 field names. Wildcard request headers are prohibited.',
         'allowedHeaders[' + String(index) + ']'
       );
     } else if (headerIsHardForbidden(lower) || headerIsBrowserForbidden(lower)) {
@@ -1662,6 +1850,16 @@ function lintCorsPolicy(options) {
     }
   }
   const methodEntries = options.methods === undefined ? [] : (typeof options.methods === 'string' ? [options.methods] : (Array.isArray(options.methods) ? options.methods : [options.methods]));
+  if (options.methods !== undefined && methodEntries.length === 0) {
+    addFinding(
+      findings,
+      LINT_CODES.INVALID_METHOD_ENTRY,
+      'high',
+      'The methods array is empty, so the runtime validator rejects it.',
+      'Configure at least one safe method or omit methods to use the secure defaults.',
+      'methods'
+    );
+  }
   for (let index = 0; index < methodEntries.length; index += 1) {
     if (validateMethod(methodEntries[index]) === null) {
       addFinding(

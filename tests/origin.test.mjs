@@ -46,6 +46,15 @@ test('parseOrigin recognizes null as an opaque origin serialization', () => {
   assert.equal(parsed.host, null);
 });
 
+
+test('parseOrigin rejects mixed-case and whitespace-padded null serializations', () => {
+  for (const input of ['NULL', 'Null', ' null', 'null ', ' null ']) {
+    const parsed = parseOrigin(input);
+    assert.equal(parsed.valid, false, input);
+    assert.equal(parsed.isNull, false, input);
+  }
+});
+
 const invalidTypes = [
   undefined,
   null,

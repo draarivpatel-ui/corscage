@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
-import { lstat, readFile } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { lstat, open } from 'node:fs/promises';
 import process from 'node:process';
 import {
   CorsCageError,
@@ -91,7 +92,43 @@ async function readConfig(path) {
   if (stat.size > MAX_CONFIG_BYTES) {
     throw new Error('configuration file exceeds the 65536 byte cap');
   }
-  const text = await readFile(path, 'utf8');
+  const nofollowFlag = process.platform !== 'win32' && typeof constants.O_NOFOLLOW === 'number' ? constants.O_NOFOLLOW : 0;
+  let handle;
+  try {
+    handle = await open(path, constants.O_RDONLY | nofollowFlag);
+  } catch (error) {
+    if (error && error.code === 'ELOOP') {
+      throw new Error('configuration path must be a regular file, not a symlink or special file');
+    }
+    throw new Error('configuration file does not exist or is not readable');
+  }
+  let text;
+  try {
+    const openedStat = await handle.stat();
+    if (!openedStat.isFile()) {
+      throw new Error('configuration path must be a regular file, not a symlink or special file');
+    }
+    if (openedStat.size > MAX_CONFIG_BYTES) {
+      throw new Error('configuration file exceeds the 65536 byte cap');
+    }
+    const buffer = Buffer.alloc(MAX_CONFIG_BYTES + 1);
+    let offset = 0;
+    while (offset < buffer.length) {
+      const result = await handle.read(buffer, offset, buffer.length - offset, offset);
+      if (result.bytesRead === 0) break;
+      offset += result.bytesRead;
+    }
+    if (offset > MAX_CONFIG_BYTES) {
+      throw new Error('configuration file exceeds the 65536 byte cap');
+    }
+    const closingStat = await handle.stat();
+    if (!closingStat.isFile() || closingStat.size !== openedStat.size || offset !== openedStat.size) {
+      throw new Error('configuration file changed while being read');
+    }
+    text = buffer.toString('utf8', 0, offset);
+  } finally {
+    await handle.close().catch(() => {});
+  }
   let parsed;
   try {
     parsed = JSON.parse(text);

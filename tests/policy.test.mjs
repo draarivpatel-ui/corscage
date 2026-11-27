@@ -304,6 +304,17 @@ test('preflight enforces configured header byte cap', () => {
   assert.equal(result.code, 'CORS_HEADERS_MALFORMED');
 });
 
+
+test('preflight rejects oversized non-ASCII header lists without copying them into output', () => {
+  const policy = basePolicy({ maxRequestHeadersBytes: 128 });
+  const result = policy.evaluate(preflight('https://app.example.com', 'POST', {
+    'access-control-request-headers': '💥'.repeat(500)
+  }));
+  assert.equal(result.allowed, false);
+  assert.equal(result.code, 'CORS_HEADERS_MALFORMED');
+  assert.match(result.reason, /control or non-ASCII/);
+});
+
 test('duplicate requested headers do not bypass count cap', () => {
   const policy = basePolicy({ maxRequestHeaders: 2 });
   const result = policy.evaluate(preflight('https://app.example.com', 'POST', {
@@ -385,6 +396,37 @@ test('private network request is denied by default', () => {
 test('private network request is emitted only with explicit opt-in', () => {
   const policy = basePolicy({ allowPrivateNetwork: true });
   const result = policy.evaluate(preflight('https://app.example.com', 'POST', {
+    'access-control-request-private-network': 'true'
+  }));
+  assert.equal(result.allowed, true);
+  assert.equal(result.headers['access-control-allow-private-network'], 'true');
+});
+
+
+test('private network access cannot be configured with the universal wildcard', () => {
+  const error = throwsInvalidOptions(() => createCorsPolicy({
+    allowedOrigins: ['*'],
+    methods: ['GET'],
+    allowPrivateNetwork: true
+  }));
+  assert.match(error.reason, /Private Network Access/);
+});
+
+test('private network access rejects mixed exact and universal wildcard policies', () => {
+  throwsInvalidOptions(() => createCorsPolicy({
+    allowedOrigins: ['https://app.example.com', '*'],
+    methods: ['GET'],
+    allowPrivateNetwork: true
+  }));
+});
+
+test('private network access remains available for an exact origin policy', () => {
+  const policy = createCorsPolicy({
+    allowedOrigins: ['https://internal.example.com'],
+    methods: ['GET'],
+    allowPrivateNetwork: true
+  });
+  const result = policy.evaluate(preflight('https://internal.example.com', 'GET', {
     'access-control-request-private-network': 'true'
   }));
   assert.equal(result.allowed, true);

@@ -250,3 +250,71 @@ test('lint detects reserved prototype pollution keys', () => {
   const findings = lintCorsPolicy(config);
   assert.ok(codesOf(findings).includes(LINT_CODES.CONFIG_INVALID));
 });
+
+test('lint flags non-boolean boolean options that runtime validation rejects', () => {
+  const keys = [
+    'credentials',
+    'allowNullOrigin',
+    'allowHttpLocalhost',
+    'multiLevelSubdomain',
+    'allowPrivateNetwork',
+    'rejectDisallowedPreflight',
+    'allowForbiddenHeaders'
+  ];
+  for (const key of keys) {
+    const findings = lintCorsPolicy({ [key]: 'yes', allowedOrigins: ['https://app.example.com'] });
+    const finding = findingsFor(findings, LINT_CODES.CONFIG_INVALID).find((item) => item.path === key);
+    assert.equal(finding.severity, 'high', key);
+  }
+});
+
+test('lint flags out-of-range preflight denial-of-service caps', () => {
+  const cases = [
+    ['maxRequestHeaders', 0],
+    ['maxRequestHeaders', 129],
+    ['maxRequestHeadersBytes', 127],
+    ['maxRequestHeadersBytes', 16385],
+    ['maxRequestHeadersBytes', Number.NaN]
+  ];
+  for (const [key, value] of cases) {
+    const findings = lintCorsPolicy({ [key]: value, allowedOrigins: ['https://app.example.com'] });
+    const finding = findingsFor(findings, LINT_CODES.CONFIG_INVALID).find((item) => item.path === key);
+    assert.equal(finding.severity, 'high', key + ' ' + String(value));
+  }
+});
+
+test('lint flags wildcard entries in explicit header allowlists', () => {
+  for (const key of ['allowedHeaders', 'exposeHeaders']) {
+    const findings = lintCorsPolicy({ [key]: ['*'], allowedOrigins: ['https://app.example.com'] });
+    const finding = findingsFor(findings, LINT_CODES.INVALID_HEADER_ENTRY)[0];
+    assert.equal(finding.severity, 'high', key);
+    assert.equal(finding.path, key + '[0]');
+  }
+});
+
+test('lint flags an empty methods array', () => {
+  const findings = lintCorsPolicy({ methods: [], allowedOrigins: ['https://app.example.com'] });
+  const finding = findingsFor(findings, LINT_CODES.INVALID_METHOD_ENTRY)[0];
+  assert.equal(finding.severity, 'high');
+  assert.equal(finding.path, 'methods');
+});
+
+test('lint flags an async origin predicate', () => {
+  const findings = lintCorsPolicy({
+    allowedOrigins: ['https://app.example.com'],
+    originPredicate: async () => true
+  });
+  const finding = findingsFor(findings, LINT_CODES.CONFIG_INVALID).find((item) => item.path === 'originPredicate');
+  assert.equal(finding.severity, 'high');
+});
+
+test('assertSafeCorsConfig rejects configurations the linter previously missed', () => {
+  for (const config of [
+    { credentials: 'yes', allowedOrigins: ['https://app.example.com'] },
+    { maxRequestHeaders: 0, allowedOrigins: ['https://app.example.com'] },
+    { allowedHeaders: ['*'], allowedOrigins: ['https://app.example.com'] },
+    { methods: [], allowedOrigins: ['https://app.example.com'] }
+  ]) {
+    assert.throws(() => assertSafeCorsConfig(config), /ERR_CORSCAGE_UNSAFE_CONFIG/);
+  }
+});

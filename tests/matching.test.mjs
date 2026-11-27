@@ -104,6 +104,7 @@ const broadPatterns = [
   'https://*.com.au',
   'https://*.co.jp',
   'https://*.github.io',
+  'https://*.vercel.app',
   'https://*.netlify.app',
   'https://*.localhost',
   'https://*.com:8443'
@@ -125,6 +126,16 @@ test('matchOrigin rejects unknown options keys', () => {
 
 test('matchOrigin rejects non-object options', () => {
   throwsInvalidOptions(() => matchOrigin('https://app.example.com', 'https://*.example.com', true));
+});
+
+
+test('matchOrigin applies the plaintext HTTP scheme floor', () => {
+  assert.equal(matchOrigin('http://example.com', 'http://example.com'), false);
+  assert.equal(matchOrigin('http://anything.example', '*'), false);
+  assert.equal(matchOrigin('http://app.example.com', 'http://*.example.com'), false);
+  assert.equal(matchOrigin('http://app.example.localhost', 'http://*.example.localhost'), false);
+  assert.equal(matchOrigin('http://localhost:3000', 'http://localhost:3000'), true);
+  assert.equal(matchOrigin('https://example.com', 'https://example.com'), true);
 });
 
 const invalidOriginEntries = [

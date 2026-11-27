@@ -12,7 +12,7 @@ with disciplined `Vary` merging.
 
 - Zero runtime dependencies and zero devDependencies
 - ESM, CommonJS and hand-authored TypeScript definitions
-- 450+ deterministic tests verified live with `npm test`
+- 718 deterministic tests verified live with `npm test`
 - Node 18 or newer
 - Exact origins and strictly bounded single-label subdomain wildcards
 - Optional multi-label subdomain matching only as an explicit opt-in
@@ -183,6 +183,12 @@ such as `com`, common aggregated country-code suffixes such as `co.uk`, and
 common shared hosting suffixes such as `github.io`. No bundled suffix list can
 be complete, so exact origins remain the recommended default.
 
+
+The standalone `matchOrigin` helper applies the same production scheme floor as
+policy evaluation. Non-local plaintext HTTP never matches, and localhost HTTP
+matches only exact origins. Use `createCorsPolicy` when the explicit
+`allowHttpLocalhost` development opt-in is needed.
+
 ## Credentials, `null` and the universal wildcard
 
 The universal wildcard entry `*` is available only for intentionally public,
@@ -262,7 +268,9 @@ For preflights, the library enforces:
 `allowPrivateNetwork: true` only when the authorized origin is intentionally
 allowed to reach private-network resources. The response header
 `Access-Control-Allow-Private-Network: true` is emitted only for an authorized
-origin and an otherwise valid preflight.
+origin and an otherwise valid preflight. Private Network Access can never be
+combined with the universal wildcard origin, even when exact origins are also
+present in the same policy.
 
 ## Node, Express and Connect middleware
 
@@ -302,7 +310,10 @@ The middleware:
   CORS is not non-browser access control
 - omits CORS headers for rejected actual requests
 - removes stale `Access-Control-*` response headers before applying the policy
-- merges `Vary` case-insensitively without dropping existing tokens
+- keeps policy CORS headers authoritative when downstream code uses response
+  header mutation APIs
+- merges `Vary` case-insensitively without dropping existing tokens and
+  preserves required `Vary` tokens against downstream overwrites or removal
 
 Express usage is the same:
 
@@ -465,8 +476,10 @@ clobbered or duplicated, and an existing `*` remains `*`.
 
 Rejected origins receive no `Access-Control-Allow-Origin`. Node and Fetch
 adapters also remove stale `Access-Control-*` response headers before applying
-the decision, preventing an upstream or downstream mistake from accidentally
-authorizing a rejected browser origin.
+the decision. The Node adapter guards the public response header mutation APIs
+used downstream, preventing an accidental overwrite, append, bulk write or
+header removal from reintroducing CORS permission or clobbering required `Vary`
+tokens.
 
 ## Security invariants
 
@@ -477,7 +490,8 @@ authorizing a rejected browser origin.
    or the wrong effective port.
 5. Dynamic boolean reflection forms are rejected by construction.
 6. Predicate errors and non-boolean predicate results fail closed.
-7. Private Network Access is opt-in and still requires an authorized origin.
+7. Private Network Access is opt-in, still requires an authorized origin and
+   can never be combined with the universal wildcard origin.
 8. Forbidden response headers cannot be exposed.
 9. Configuration typos are errors, not ignored settings.
 10. The runtime has no dependency tree and no network access.
@@ -493,6 +507,9 @@ authorizing a rejected browser origin.
   CORS itself is not non-browser access control. Use authentication and
   authorization for enforcement.
 - The library does not make wildcard use safe for data that is not public.
+- Node response guards are not a sandbox for intentionally hostile application
+  code. They defend against accidental downstream header mistakes through the
+  public response APIs.
 - TypeScript definitions are hand-authored and tested structurally, but the
   implementation itself is dependency-free JavaScript.
 

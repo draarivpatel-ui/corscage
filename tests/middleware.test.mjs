@@ -156,6 +156,68 @@ test('middleware requires response setHeader support', () => {
   assert.throws(() => createNodeCorsMiddleware(options())(actualReq(), {}, () => {}), /setHeader/);
 });
 
+test('middleware prevents downstream CORS header reintroduction for a rejected origin', () => {
+  const res = mockResponse();
+  const middleware = createNodeCorsMiddleware(options());
+  let nextCalls = 0;
+  middleware(actualReq('https://evil.example'), res, () => {
+    nextCalls += 1;
+    res.setHeader('Access-Control-Allow-Origin', 'https://evil.example');
+    res.setHeader('Access-Control-Allow-Credentials', 'true');
+    res.setHeader('Access-Control-Expose-Headers', 'x-evil');
+  });
+  assert.equal(nextCalls, 1);
+  assert.equal(res.headers['access-control-allow-origin'], undefined);
+  assert.equal(res.headers['access-control-allow-credentials'], undefined);
+  assert.equal(res.headers['access-control-expose-headers'], undefined);
+});
+
+test('middleware keeps the exact allowed origin authoritative downstream', () => {
+  const res = mockResponse();
+  const middleware = createNodeCorsMiddleware(options());
+  middleware(actualReq(), res, () => {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.removeHeader('Access-Control-Allow-Credentials');
+  });
+  assert.equal(res.headers['access-control-allow-origin'], 'https://app.example.com');
+  assert.equal(res.headers['access-control-allow-credentials'], 'true');
+});
+
+test('middleware preserves required Vary tokens when downstream mutates them', () => {
+  const res = mockResponse();
+  const middleware = createNodeCorsMiddleware(options());
+  middleware(actualReq(), res, () => {
+    res.setHeader('Vary', 'accept-encoding');
+  });
+  assert.equal(res.headers.vary, 'Origin, accept-encoding');
+  res.removeHeader('Vary');
+  assert.equal(res.headers.vary, 'Origin, accept-encoding');
+});
+
+test('middleware fails clearly when response headers were already sent', () => {
+  const res = mockResponse();
+  res.headersSent = true;
+  assert.throws(
+    () => createNodeCorsMiddleware(options())(actualReq(), res, () => {}),
+    (error) => {
+      assert.equal(error.name, 'CorsCageError');
+      assert.match(error.message, /already been sent/);
+      return true;
+    }
+  );
+});
+
+test('middleware requires getHeader and removeHeader support', () => {
+  for (const missing of ['getHeader', 'removeHeader']) {
+    const res = mockResponse();
+    delete res[missing];
+    assert.throws(
+      () => createNodeCorsMiddleware(options())(actualReq(), res, () => {}),
+      new RegExp(missing)
+    );
+  }
+});
+
 test('middleware exposes its frozen policy non-enumerably', () => {
   const middleware = createNodeCorsMiddleware(options());
   assert.equal(typeof middleware.policy, 'object');
@@ -279,6 +341,86 @@ test('real Node http server preserves downstream Vary token', async () => {
   try {
     const response = await requestRaw(port, 'GET', { origin: 'https://app.example.com' });
     assert.equal(response.headers.vary, 'Accept-Encoding, Origin');
+  } finally {
+    await close(server);
+  }
+});
+
+
+const downstreamMutationCases = [
+  ['setHeader reintroduction', (res) => {
+    res.setHeader('access-control-allow-origin', 'https://evil.example');
+  }, false],
+  ['appendHeader reintroduction', (res) => {
+    res.appendHeader('access-control-allow-origin', 'https://evil.example');
+  }, false],
+  ['setHeaders reintroduction and Vary overwrite', (res) => {
+    res.setHeaders(new Headers({
+      'access-control-allow-origin': 'https://evil.example',
+      vary: 'accept-encoding'
+    }));
+  }, true],
+  ['writeHead object reintroduction and Vary overwrite', (res) => {
+    res.writeHead(200, {
+      'access-control-allow-origin': 'https://evil.example',
+      vary: 'accept-encoding'
+    });
+  }, true],
+  ['writeHead array reintroduction and Vary overwrite', (res) => {
+    res.writeHead(200, [
+      'access-control-allow-origin', 'https://evil.example',
+      'vary', 'accept-encoding'
+    ]);
+  }, true],
+  ['writeHead Vary overwrite only', (res) => {
+    res.writeHead(200, { vary: 'accept-encoding' });
+  }, true],
+  ['removeHeader Vary removal', (res) => {
+    res.removeHeader('vary');
+  }, false]
+];
+
+for (const [label, mutate, expectEncoding] of downstreamMutationCases) {
+  test('real Node http server resists downstream ' + label, async () => {
+    const middleware = createNodeCorsMiddleware(options());
+    const server = http.createServer((req, res) => {
+      middleware(req, res, () => {
+        mutate(res);
+        res.end('application');
+      });
+    });
+    const port = await listen(server);
+    try {
+      const response = await requestRaw(port, 'GET', { origin: 'https://evil.example' });
+      assert.equal(response.statusCode, 200);
+      assert.equal(response.headers['access-control-allow-origin'], undefined);
+      assert.match(response.headers.vary, /(^|, )origin(,|$)/i);
+      if (expectEncoding) assert.match(response.headers.vary, /accept-encoding/i);
+    } finally {
+      await close(server);
+    }
+  });
+}
+
+test('real Node http server keeps allowed exact origin authoritative through writeHead', async () => {
+  const middleware = createNodeCorsMiddleware(options());
+  const server = http.createServer((req, res) => {
+    middleware(req, res, () => {
+      res.writeHead(200, {
+        'access-control-allow-origin': '*',
+        'access-control-expose-headers': 'set-cookie',
+        vary: 'accept-encoding'
+      });
+      res.end('application');
+    });
+  });
+  const port = await listen(server);
+  try {
+    const response = await requestRaw(port, 'GET', { origin: 'https://app.example.com' });
+    assert.equal(response.headers['access-control-allow-origin'], 'https://app.example.com');
+    assert.equal(response.headers['access-control-expose-headers'], 'x-response-id');
+    assert.match(response.headers.vary, /origin/i);
+    assert.match(response.headers.vary, /accept-encoding/i);
   } finally {
     await close(server);
   }

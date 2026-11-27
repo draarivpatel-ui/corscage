@@ -143,8 +143,8 @@ export interface NodeRequestLike {
 export interface NodeResponseLike {
   statusCode: number;
   setHeader(name: string, value: string | number | readonly string[]): void;
-  getHeader?(name: string): unknown;
-  removeHeader?(name: string): void;
+  getHeader(name: string): unknown;
+  removeHeader(name: string): void;
   end?(chunk?: unknown): void;
   readonly headers?: Record<string, unknown>;
 }
@@ -152,6 +152,7 @@ export interface NodeResponseLike {
 export type NodeNextFunction = (error?: unknown) => void;
 export type NodeCorsMiddleware = {
   (req: NodeRequestLike, res: NodeResponseLike, next?: NodeNextFunction): void;
+  readonly policy: CorsPolicy;
 };
 
 export type FetchHandler<Args extends unknown[] = unknown[]> = (

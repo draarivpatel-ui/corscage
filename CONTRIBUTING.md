@@ -35,7 +35,7 @@ Tests must pass on Linux and Windows. The CI matrix covers Node 18, 20, 22 and
 - Keep parsing deterministic and linear-time.
 - Prefer explicit rejection over browser-dependent normalization.
 - Keep public errors machine-readable through stable codes.
-- Do not mutate caller-owned options, request objects or response objects.
+- Do not mutate caller-owned options or request objects. Response object changes are limited to documented headers, status and the non-enumerable header guards required for enforcement.
 
 ## Security reports
 

@@ -149,6 +149,7 @@ test('CI covers Node 18 20 22 and 24 on ubuntu 24.04 and Windows', async () => {
   assert.ok(ci.includes('windows-latest'));
   assert.ok(ci.includes('node: [18, 20, 22, 24]'));
   assert.ok(ci.includes('npm test'));
+  assert.ok(ci.includes('npm run check:cjs'));
   assert.ok(ci.includes('node scripts/cli-smoke.mjs'));
   assert.ok(ci.includes('npm run smoke'));
   assert.ok(ci.includes('npm pack --dry-run'));
@@ -159,7 +160,7 @@ test('README documents threat model limitations and honest publication status', 
   assert.match(readme, /Threat model/i);
   assert.match(readme, /Limitations/i);
   assert.match(readme, /not claimed to be published yet/i);
-  assert.match(readme, /450\+ deterministic tests/i);
+  assert.match(readme, /718 deterministic tests/i);
   assert.match(readme, /not an\s+authentication system/i);
 });
 

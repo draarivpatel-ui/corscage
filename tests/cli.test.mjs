@@ -100,6 +100,19 @@ test('CLI directory config path exits 2', () => {
   assert.match(result.stderr, /regular file/);
 });
 
+test('CLI FIFO config path is refused on platforms with FIFO support', () => {
+  if (process.platform === 'win32') {
+    assert.equal(process.platform, 'win32');
+    return;
+  }
+  const fifo = path.join(scratch, 'config.fifo');
+  const made = spawnSync('mkfifo', [fifo], { encoding: 'utf8' });
+  assert.equal(made.status, 0, made.stderr);
+  const result = runCli(['lint', '--config', fifo]);
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /regular file/);
+});
+
 test('CLI symlink config path is refused', () => {
   const target = goodConfig();
   const link = path.join(scratch, 'linked-config.json');
@@ -125,6 +138,17 @@ test('CLI oversized config exits 2', () => {
   const result = runCli(['lint', '--config', file]);
   assert.equal(result.status, 2);
   assert.match(result.stderr, /65536 byte cap/);
+});
+
+
+test('CLI accepts a regular config exactly at the byte cap', () => {
+  const base = JSON.stringify({ allowedOrigins: ['https://app.example.com'] });
+  const padding = ' '.repeat(65536 - Buffer.byteLength(base, 'utf8'));
+  const file = writeConfig(base + padding, 'exact-cap.json');
+  assert.equal(statSync(file).size, 65536);
+  const result = runCli(['lint', '--config', file]);
+  assert.equal(result.status, 0);
+  assert.match(result.stdout, /clean/);
 });
 
 test('CLI invalid JSON exits 2', () => {
