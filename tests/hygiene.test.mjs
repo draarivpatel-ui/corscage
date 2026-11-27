@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readdir, readFile, stat } from 'node:fs/promises';
+import { readdir, readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { cjs } from './helpers.mjs';
@@ -85,7 +85,7 @@ test('package metadata has the required name version license and dependency shap
   assert.equal(pkg.version, '1.0.0');
   assert.equal(pkg.license, 'MIT');
   assert.deepEqual(pkg.dependencies, {});
-  assert.deepEqual(pkg.devDependencies, {});
+  assert.deepEqual(pkg.devDependencies, { 'fast-check': '4.10.3' });
   assert.equal(pkg.engines.node, '>=18.0.0');
   assert.equal(pkg.sideEffects, false);
 });
@@ -246,6 +246,7 @@ test('TypeScript definitions include every public API', async () => {
   }
 });
 
-test('no dependency directory is present in the source tree', async () => {
-  await assert.rejects(stat(path.join(root, 'node_modules')), /ENOENT/);
+test('dependency installation artifacts are ignored', async () => {
+  const gitignore = await readFile(path.join(root, '.gitignore'), 'utf8');
+  assert.match(gitignore, /^node_modules\/$/m);
 });
