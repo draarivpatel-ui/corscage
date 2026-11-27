@@ -117,7 +117,7 @@ test('package bin entry has no leading relative prefix', async () => {
 
 test('package test script uses the required explicit test glob', async () => {
   const pkg = JSON.parse(await readFile(path.join(root, 'package.json'), 'utf8'));
-  assert.equal(pkg.scripts.test, 'node --test tests/*.test.mjs');
+  assert.equal(pkg.scripts.test, 'node scripts/run-tests.mjs');
 });
 
 test('package published file list is intentional and includes runtime docs types and CLI', async () => {
