@@ -1,5 +1,7 @@
 # corscage
 
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/draarivpatel-ui/corscage/badge)](https://scorecard.dev/viewer/?uri=github.com/draarivpatel-ui/corscage)
+
 Zero-dependency strict CORS origin validation, preflight policy enforcement,
 middleware and configuration auditing for Node.js.
 
